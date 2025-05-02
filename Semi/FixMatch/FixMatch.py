@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingLR, ConstantLR, SequentialLR
 
 from torch.utils.tensorboard import SummaryWriter
 from itertools import cycle
@@ -47,15 +47,23 @@ if __name__ == "__main__":
         splitRatio = 0.1
     )
     del trainX, testX, testY, unlabeled
-    
+
+    initLR = 1e-3; targetLR = 1e-10
+    epochs = 200; tau = 0.5; l1 = 1e-3; l2 = 1e-3; reAugmentApply = 3; 
+        
     optimizer             = optim.SGD(model.parameters(), lr = 1e-3, momentum = 0.9, nesterov = True)
-    scheduler             = CosineAnnealingLR(optimizer = optimizer, T_max = 20, eta_min = 0)
+    cosine                = CosineAnnealingLR(optimizer = optimizer, T_max = epochs // 2, eta_min = targetLR)
+    constant              = ConstantLR(optimizer = optimizer, factor = targetLR / initLR, total_iters = 1)
+    scheduler             = SequentialLR(
+        optimizer = optimizer,
+        schedulers = [cosine, constant],
+        milestones = [epochs // 2]
+    )
     supervisedCriterion   = nn.CrossEntropyLoss(label_smoothing = 0.1)
     unsupervisedCriterion = nn.CrossEntropyLoss(reduction = 'none')
     alignment             = DistributionAlignment(trainY, numClasses = numClasses, momentum = 0.999).to(device)
     earlystop             = EarlyStopping(50, 0.00000001, path = f"./Resnet_{depth}_{width}.pt", verbose = True)
 
-    epochs = 200; tau = 0.5; l1 = 1e-3; l2 = 1e-3; reAugmentApply = 3; 
 
     trainLosses = []; valLosses = []; 
     pbar = tqdm(range(epochs), desc="Training Epochs")
