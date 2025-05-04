@@ -1,3 +1,6 @@
+import os, sys
+root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, root)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,7 +11,8 @@ from torch.utils.tensorboard import SummaryWriter
 from itertools import cycle
 from tqdm.auto import tqdm
 
-from models import *
+from utils.WRN import *
+from utils.helper import *
 
 
 
