@@ -482,7 +482,7 @@ class ViT(nn.Module):
         self.clsToken = nn.Parameter(data = torch.zeros(1, 1, modelDepth), requires_grad = True) # Acts as sumarization vector
         nn.init.trunc_normal_(self.clsToken, std = 0.02)
 
-        self.position = PositionalEncoding2D(height = int(numPatches ** .5), width = int(numPatches ** .5))
+        self.position = PositionalEncoding2D(height = int(numPatches ** .5), width = int(numPatches ** .5), dim = modelDepth)
 
         self.encoders = nn.ModuleList([
             TransformerEncoder(dropout = droprate, ffDim = 1024) for _ in range(nEncoder)
