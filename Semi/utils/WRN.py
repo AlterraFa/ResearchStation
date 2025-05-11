@@ -1,3 +1,10 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Hide INFO, WARNING, and ERROR messages
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN custom operations
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+os.environ['TORCH_USE_CUDA_DSA'] = '1'
+os.environ['HF_DATASETS_OFFLINE'] = '1'
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -39,9 +46,9 @@ class ResnetBlock(nn.Module):
         return self.shortcutCompat(x) + out
     
 
-class ConvneXt(nn.Module):
+class ConvNeXt(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, stride: int, dropout: float = 0.0, scaleInit: float = 1e-6):
-        super(ConvneXt, self).__init__()
+        super(ConvNeXt, self).__init__()
         
         if in_channels != out_channels or stride != 1:
             self.reduction = nn.Sequential(
@@ -117,7 +124,7 @@ class WRN(nn.Module):
 
         self.bn = nn.BatchNorm2d(channelDepth[-1], momentum = 0.01)
         self.LeakyReLU = nn.LeakyReLU(inplace = True, negative_slope = 0.01)
-        self.fc = nn.LazyLinear(numClasses)
+        self.fc = nn.Linear(channelDepth[-1], numClasses)
 
         
         for m in self.modules():
@@ -129,8 +136,8 @@ class WRN(nn.Module):
         
         
     def forward(self, x):
-        if self.patchSz != 0:
-            assert x.shape[0] % self.patchSz == 0, f"Patch size is enabled but is not divisible by input shape. Redo the model"
+        if self.patchSz != 0 and not torch.jit.is_tracing():
+            assert x.shape[-1] % self.patchSz == 0, f"Patch size is enabled but is not divisible by input shape. Redo the model"
         
         x = self.stem(x)
         for group in self.largeGroup:
@@ -147,39 +154,3 @@ class WRN(nn.Module):
         print(f"Total Trainable Parameters: {total_params:,}")
         print(f"Approximate Model Size: {total_MB:.2f} MB")
         
-class Block(nn.Module):
-    r""" ConvNeXt Block. There are two equivalent implementations:
-    (1) DwConv -> LayerNorm (channels_first) -> 1x1 Conv -> GELU -> 1x1 Conv; all in (N, C, H, W)
-    (2) DwConv -> Permute to (N, H, W, C); LayerNorm (channels_last) -> Linear -> GELU -> Linear; Permute back
-    We use (2) as we find it slightly faster in PyTorch
-    
-    Args:
-        dim (int): Number of input channels.
-        drop_path (float): Stochastic depth rate. Default: 0.0
-        layer_scale_init_value (float): Init value for Layer Scale. Default: 1e-6.
-    """
-    def __init__(self, dim, drop_path=0., layer_scale_init_value=1e-6):
-        super().__init__()
-        self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim) # depthwise conv
-        self.norm = nn.LayerNorm(dim, eps=1e-6)
-        self.pwconv1 = nn.Linear(dim, 4 * dim) # pointwise/1x1 convs, implemented with linear layers
-        self.act = nn.GELU()
-        self.pwconv2 = nn.Linear(4 * dim, dim)
-        self.gamma = nn.Parameter(layer_scale_init_value * torch.ones((dim)), 
-                                    requires_grad=True) if layer_scale_init_value > 0 else None
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-    def forward(self, x):
-        input = x
-        x = self.dwconv(x)
-        x = x.permute(0, 2, 3, 1) # (N, C, H, W) -> (N, H, W, C)
-        x = self.norm(x)
-        x = self.pwconv1(x)
-        x = self.act(x)
-        x = self.pwconv2(x)
-        if self.gamma is not None:
-            x = self.gamma * x
-        x = x.permute(0, 3, 1, 2) # (N, H, W, C) -> (N, C, H, W)
-
-        x = input + self.drop_path(x)
-        return x
