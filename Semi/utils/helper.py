@@ -150,7 +150,6 @@ class VariableTensorDataset(Dataset):
 class VariableThresh(nn.Module):
     def __init__(self, unlabeledSz: int, numClasses: int, tau = .8):
         super().__init__()
-        print(numClasses)
         
         learningTracer = torch.full((unlabeledSz, ), -1, dtype = torch.long)
         self.register_buffer("learningTracer", learningTracer)
@@ -167,6 +166,8 @@ class VariableThresh(nn.Module):
         confs, pseudoLabel = prob.max(dim = 1)
         mask               = (confs >= self.tau)
         learnEffect        = (mask.unsqueeze(1) * (self.classArray == maxClass)).sum(dim = 0)
+        
+        print(torch.all((self.classArray == maxClass) == (pseudoLabel.unsqueeze(1) == self.classArray)))
 
         confidentIndicies  = indices.to(self.learningTracer.device)[mask]
         self.learningTracer[confidentIndicies] = pseudoLabel[mask]
@@ -182,9 +183,12 @@ class VariableThresh(nn.Module):
         else:
             beta = learnEffect / torch.clamp(torch.max(learnEffect), min = 1.0) # Per class
             
+        beta = self.project(beta)
+            
         variMask = confs >= (beta[pseudoLabel] * self.tau)
         return variMask, pseudoLabel
 
+    project = lambda self, x: x / (2 + x)
 
 normAugment = T.Compose([
     T.Lambda(lambda x: x.float().div(255)),
