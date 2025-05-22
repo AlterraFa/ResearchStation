@@ -1,6 +1,9 @@
 from utils.transformer import *
 from torchvision.models import ResNet50_Weights, resnet50
+import torch.nn.functional as F
 
+from torchvision.ops import generalized_box_iou as GIoU, box_convert as bboxConvert
+from scipy.optimize import linear_sum_assignment as hungarianMatch
 
 class ViT(nn.Module):
     def __init__(self, 
@@ -99,7 +102,31 @@ class DeTr(nn.Module):
                        ]
             
         return nn.Sequential(*layers)
+    
+    def hungarianLoss(self, 
+                      classGT: Tensor, classLogits: Tensor, 
+                      bboxGT: Tensor, bboxProposal: Tensor,
+                      classLoss: nn.Module, boxLoss: nn.Module,
+                      alphaClass: float = 1.0, alphaL1Box: float = 1.0, alphaGIoUBox: float = 1.0):
+        numDetections = classGT.shape[0]
+        
+        # Holy fuck, a lot of dimension manipulation 
+        # This is horseshit
+        labelsFlat        = classGT.unsqueeze(0).expand(self.proposalSize, -1).reshape(-1)
+        classLogitsFlat   = classLogits.unsqueeze(1).expand(-1, numDetections, -1).reshape(-1, self.numClasses + 1)
+        hungarianClassMat = classLoss(classLogitsFlat, labelsFlat).reshape(self.proposalSize, -1)
 
+        bboxPredExpandedFlat = bboxProposal.unsqueeze(1).expand(-1, numDetections, -1).reshape(-1, 4)
+        bboxGTExpandedFlat   = bboxGT.unsqueeze(0).expand(self.proposalSize, -1, -1).reshape(-1, 4)
+        bboxL1Mat            = boxLoss(bboxPredExpandedFlat, bboxGTExpandedFlat).reshape(self.proposalSize, numDetections, -1).mean(dim = -1)
+        bboxGIoUMat          = GIoU(bboxProposal, bboxGT)
+
+        hungarianCost = alphaClass * hungarianClassMat + alphaL1Box * bboxL1Mat + alphaGIoUBox * - bboxGIoUMat
+        hungarianCost = hungarianCost.cpu().detach().numpy()
+
+        rowIdx, colIdx = hungarianMatch(hungarianCost)
+        
+        return rowIdx, colIdx
     
     def summary(self):
         

@@ -10,11 +10,10 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, ConstantLR, SequentialLR
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset, Dataset
 from torchvision.ops import generalized_box_iou as GIoU, box_convert as bboxConvert
-from scipy.optimize import linear_sum_assignment
 import xml.etree.ElementTree as ET
 
 from utils.imageTransformer import DeTr
-from utils.helper import EarlyStopping
+from utils.helper import EarlyStopping, DetectionDataset
 from tensorboardX import SummaryWriter
 
 from tqdm.auto import tqdm
@@ -25,60 +24,6 @@ normTransform = transforms.Compose([
     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 ])
 
-class DetectionDataset(Dataset):
-    def __init__(self, dataset, className: List[str], imgSize = 640):
-        super().__init__()
-        
-        self.dataset = dataset
-        self.imgSize = imgSize
-        self.CLASSES = className
-        
-    def __len__(self):
-        return len(self.dataset)
-    
-    def __getitem__(self, index):
-        img, target = self.dataset[index]
-        ann = target['annotation']
-        objs = ann['object']
-        if isinstance(objs, dict):
-            objs = [objs]
-
-        boxes = torch.tensor([
-            [
-            float(o['bndbox']['xmin']),
-            float(o['bndbox']['xmax']),
-            float(o['bndbox']['ymin']),
-            float(o['bndbox']['ymax'])
-            ]
-        for o in objs], dtype = torch.float32)
-        labels = torch.tensor([self.CLASSES.index(o['name']) for o in objs], dtype = torch.long)
-        
-        H, W = img.shape[1:]
-        scale = min(self.imgSize / H, self.imgSize / W)
-        newH, newW = int(H * scale), int(W * scale)
-        img = F.resize(img, (newH, newW))
-        padH, padW = self.imgSize - newH, self.imgSize - newW
-        left = padW // 2
-        right = padW - left
-        top = padH // 2
-        bottom = padH - top
-        img = F.pad(img, (left, top, right, bottom), fill = 0)
-        
-        boxes = boxes.clone().float()
-        boxes *= scale
-        boxes[:, [0, 1]] += left
-        boxes[:, [2, 3]] += top
-        boxes /= self.imgSize
-        
-        return img, (labels, boxes)
-    
-    def collate_fn(self, batch):
-        imgs      = [item[0] for item in batch]
-        labels    = [item[1][0] for item in batch]
-        boxes     = [item[1][1] for item in batch]
-
-        imgs = torch.stack(imgs, dim=0)
-        return imgs, labels, boxes
         
 def fastUniSplit(
     voc_root: str,
@@ -173,7 +118,7 @@ if __name__ == "__main__":
     
 
     epochs = 400; switchEpoch = 60; initLR = 7.5e-4; finalLR = 1e-10; l1 = 1e-5; l2 = 1e-5
-    αGIoUBox = 1; αL1Box = 1; αClass = 1
+    alphaGIoUBox = 1; alphaL1Box = 1; alphaClass = 1
     weights = torch.ones(len(CLASS) + 1, device = gpu); weights[len(CLASS)] = 0.1
     classCriterion  = nn.CrossEntropyLoss(label_smoothing = .1, reduction = "none", weight = weights)
     bboxL1Criterion = nn.SmoothL1Loss(reduction = "none")
@@ -200,29 +145,19 @@ if __name__ == "__main__":
             loss = 0.0
             for i in range(batchSize):
                 numDetections = labels[i].shape[0]
+                classGT = labels[i].to(gpu)
+                bboxGT  = bbox[i].to(gpu) 
+                bboxConverted = bboxConvert(bboxProposal[i], in_fmt = "cxcywh", out_fmt = "xyxy")
                 if numDetections == 0:
                     classTargets = torch.full((model.proposalSize, ), len(CLASS), device = gpu, dtype = torch.long)
                     classLoss    = classCriterion(classLogits[i], classTargets).mean()
-                    loss         = αClass * classLoss
+                    loss         = alphaClass * classLoss
                     continue
-                classGT = labels[i].to(gpu)
-                bboxGT  = bbox[i].to(gpu) 
 
-                # This is still missing background loss padding (Will work on it later)
-                labelsFlat        = classGT.unsqueeze(0).expand(model.proposalSize, -1).reshape(-1)
-                classLogitsFlat   = classLogits[i].unsqueeze(1).expand(-1, numDetections, -1).reshape(-1, len(CLASS) + 1)
-                hungarianClassMat = classCriterion(classLogitsFlat, labelsFlat).reshape(model.proposalSize, -1)
-
-                bboxConverted        = bboxConvert(bboxProposal[i], in_fmt = "xywh", out_fmt = "xyxy") # Need the output to be xywh since shit won't work if it is raw xyxy and creates degenerate bb (negative area)
-                bboxPredExpandedFlat = bboxConverted.unsqueeze(1).expand(-1, numDetections, -1).reshape(-1, 4)
-                bboxGTExpandedFlat   = bboxGT.unsqueeze(0).expand(model.proposalSize, -1, -1).reshape(-1, 4)
-                bboxL1Mat            = bboxL1Criterion(bboxPredExpandedFlat, bboxGTExpandedFlat).reshape(model.proposalSize, numDetections, -1).mean(dim = -1)
-                bboxGIoUMat          = GIoU(bboxConverted, bboxGT)
-
-                hungarianCost = αClass * hungarianClassMat + αL1Box * bboxL1Mat + αGIoUBox * - bboxGIoUMat
-                hungarianCost = hungarianCost.cpu().detach().numpy()
-
-                rowIdx, colIdx = linear_sum_assignment(hungarianCost)
+                rowIdx, colIdx = model.hungarianLoss(classGT = classGT, classLogits = classLogits[i], 
+                                                     bboxGT  = bboxGT, bboxProposal = bboxConverted,
+                                                     classLoss = classCriterion, boxLoss = bboxL1Criterion, 
+                                                     alphaClass = alphaClass, alphaL1Box = alphaL1Box, alphaGIoUBox = alphaGIoUBox)
                 
                 classTargets = torch.full((model.proposalSize, ), len(CLASS), device = gpu, dtype = torch.long)
                 classTargets[rowIdx] = classGT[colIdx]
@@ -230,37 +165,13 @@ if __name__ == "__main__":
 
                 
                 bboxL1Loss = bboxL1Criterion(bboxConverted[rowIdx], bboxGT[colIdx]).mean()
-                bboxGIoULoss = (1.0 - bboxGIoUMat[rowIdx, colIdx]).mean()
+                bboxGIoULoss = (1.0 - GIoU(bboxConverted, bboxGT)[rowIdx, colIdx]).mean()
         
-                loss += αClass * classLoss + αL1Box * bboxL1Loss + αGIoUBox * bboxGIoULoss        
+                loss += alphaClass * classLoss + alphaL1Box * bboxL1Loss + alphaGIoUBox * bboxGIoULoss        
             
             loss /= batchSize
             loss.backward()
 
-            # supervisedLoss = supervisedCriterion(logits, yBatch).mean()
-            # distribution   = torch.softmax(logits, dim = 1)
-            # correct        = (torch.argmax(distribution, dim = 1) == yBatch).sum(); trainCnt += yBatch.shape[0]
-
-            # with torch.no_grad():
-            #     unlabeledWeak      = unlabeledWeak.to(device)
-            #     wLogits            = model(unlabeledWeak.to(device))
-            #     qWeak              = torch.softmax(wLogits, dim = 1)
-            #     confs, pseudoLabel = qWeak.max(dim = 1)
-            #     # pseudoLabel        = pseudoLabel.detach()
-            #     pseudoLabel        = alignment(qWeak)
-            #     mask               = (confs >= tau).float()
-
-            
-            # consecLoss = 0 # Augmentation anchoring
-            # for unlabeledStrong in unlabeledStrongList:
-            #     unlabeledStrong = unlabeledStrong.to(device, non_blocking = True)
-
-            #     sLogits      = model(unlabeledStrong)
-            #     scalarLoss   = (mask * unsupervisedCriterion(sLogits, pseudoLabel)).mean()
-            #     consecLoss  += scalarLoss
-
-                
-            # consistencyLoss = consecLoss / reaugmentApply
 
             # weightParams = [p for n, p in model.named_parameters()
             #                 if p.requires_grad and "weight" in n]

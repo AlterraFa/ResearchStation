@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 from torch import randperm
+from torchvision.transforms import functional as F
 
 from typing import Tuple, List, Optional, Callable, Union, Sequence
 
@@ -278,3 +279,60 @@ class DistributionAlignment(nn.Module):
         labelTilde = q * (self.pEmperical / (self.pRunning + 1e-6)).unsqueeze(0)
         
         return labelTilde / labelTilde.sum(dim = 1, keepdim = True)
+
+        
+
+class DetectionDataset(Dataset):
+    def __init__(self, dataset, className: List[str], imgSize = 640):
+        super().__init__()
+        
+        self.dataset = dataset
+        self.imgSize = imgSize
+        self.CLASSES = className
+        
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, index):
+        img, target = self.dataset[index]
+        ann = target['annotation']
+        objs = ann['object']
+        if isinstance(objs, dict):
+            objs = [objs]
+
+        boxes = torch.tensor([
+            [
+            float(o['bndbox']['xmin']),
+            float(o['bndbox']['xmax']),
+            float(o['bndbox']['ymin']),
+            float(o['bndbox']['ymax'])
+            ]
+        for o in objs], dtype = torch.float32)
+        labels = torch.tensor([self.CLASSES.index(o['name']) for o in objs], dtype = torch.long)
+        
+        H, W = img.shape[1:]
+        scale = min(self.imgSize / H, self.imgSize / W)
+        newH, newW = int(H * scale), int(W * scale)
+        img = F.resize(img, (newH, newW))
+        padH, padW = self.imgSize - newH, self.imgSize - newW
+        left = padW // 2
+        right = padW - left
+        top = padH // 2
+        bottom = padH - top
+        img = F.pad(img, (left, top, right, bottom), fill = 0)
+        
+        boxes = boxes.clone().float()
+        boxes *= scale
+        boxes[:, [0, 1]] += left
+        boxes[:, [2, 3]] += top
+        boxes /= self.imgSize
+        
+        return img, (labels, boxes)
+    
+    def collate_fn(self, batch):
+        imgs      = [item[0] for item in batch]
+        labels    = [item[1][0] for item in batch]
+        boxes     = [item[1][1] for item in batch]
+
+        imgs = torch.stack(imgs, dim=0)
+        return imgs, labels, boxes
