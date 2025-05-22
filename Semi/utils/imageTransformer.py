@@ -52,7 +52,7 @@ class ViT(nn.Module):
         
         
 class DeTr(nn.Module):
-    def __init__(self, numClasses: int, nHeads: int, nEncoders: int, nDecoders: int, hiddenDim: int):
+    def __init__(self, numClasses: int, nEncoders: int, nDecoders: int, nHeads: int = 8, hiddenDim: int = 1024):
         super().__init__()
 
         strideReplace = [False, False, False]
@@ -62,15 +62,19 @@ class DeTr(nn.Module):
         backbone = resnet50(replace_stride_with_dilation = strideReplace,
                             weights = ResNet50_Weights.DEFAULT)
         
+        self.proposalSize = 100
         self.backbone    = nn.Sequential(*list(backbone.children())[:-2])
         self.conv        = nn.Conv2d(2048, hiddenDim, 1)
-        self.transformer = Transformer(nEncoders = nEncoders, nDecoders = nDecoders, querySz = 100, nHeads = nHeads, 
-                                       positionEnc = SpatialEncoding(imgSize = (outputSize, outputSize), modelDepth = hiddenDim), modelDepth = hiddenDim)
+        self.transformer = Transformer(nEncoders = nEncoders, nDecoders = nDecoders, querySz = self.proposalSize, nHeads = nHeads, 
+                                    positionEnc = SpatialEncoding(imgSize = (outputSize, outputSize), modelDepth = hiddenDim), modelDepth = hiddenDim)
         
         self.linearCls = self.MLP(inputDim = hiddenDim, hiddenDim = hiddenDim * 2, outputDim = numClasses + 1)
         self.linearBB  = self.MLP(inputDim = hiddenDim, hiddenDim = hiddenDim * 2, outputDim = 4)
         
         self.hiddenDim = hiddenDim
+        self.numClasses = numClasses
+        for p in self.backbone.parameters():
+            p.requires_grad = False
     
     def forward(self, x: Tensor, auxiliary = False):
         
@@ -78,13 +82,13 @@ class DeTr(nn.Module):
         out = self.conv(out)
         
         B = out.shape[0]
-        out = out.reshape(B, -1, self.hiddenDim)
+        out = out.reshape(B, -1, self.hiddenDim).contiguous()
         out = self.transformer(out, auxiliary)
         if auxiliary:
             out = torch.stack(out, dim = 1)
         
         
-        return self.linearCls(out), self.linearBB(out).sigmoid()
+        return self.linearCls(out), self.linearBB(out).sigmoid() # bounding box coordinates is formatted as (x, y, w, h) normalized to [0, 1]
 
     def MLP(self, inputDim, hiddenDim, outputDim, numLayers = 3):
         layers = []
@@ -96,6 +100,7 @@ class DeTr(nn.Module):
             
         return nn.Sequential(*layers)
 
+    
     def summary(self):
         
         total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)

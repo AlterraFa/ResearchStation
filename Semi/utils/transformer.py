@@ -8,7 +8,7 @@ os.environ['HF_DATASETS_OFFLINE'] = '1'
 import torch
 from torch import nn, Tensor
 from transformers import GPT2Tokenizer
-from typing import Union, Tuple, Optional
+from typing import Union, Tuple, Optional, List
 
 
 
