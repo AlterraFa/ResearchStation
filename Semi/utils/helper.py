@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 from torch import randperm
-from torchvision.transforms import functional as F
+from torchvision.transforms  import functional as F
 
 from typing import Tuple, List, Optional, Callable, Union, Sequence
 

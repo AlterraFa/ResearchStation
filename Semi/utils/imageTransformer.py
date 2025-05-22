@@ -106,7 +106,7 @@ class DeTr(nn.Module):
     def hungarianLoss(self, 
                       classGT: Tensor, classLogits: Tensor, 
                       bboxGT: Tensor, bboxProposal: Tensor,
-                      classLoss: nn.Module, boxLoss: nn.Module,
+                      classCriterion: nn.Module, boxCriterion: nn.Module,
                       alphaClass: float = 1.0, alphaL1Box: float = 1.0, alphaGIoUBox: float = 1.0):
         numDetections = classGT.shape[0]
         
@@ -114,11 +114,11 @@ class DeTr(nn.Module):
         # This is horseshit
         labelsFlat        = classGT.unsqueeze(0).expand(self.proposalSize, -1).reshape(-1)
         classLogitsFlat   = classLogits.unsqueeze(1).expand(-1, numDetections, -1).reshape(-1, self.numClasses + 1)
-        hungarianClassMat = classLoss(classLogitsFlat, labelsFlat).reshape(self.proposalSize, -1)
+        hungarianClassMat = classCriterion(classLogitsFlat, labelsFlat).reshape(self.proposalSize, -1)
 
         bboxPredExpandedFlat = bboxProposal.unsqueeze(1).expand(-1, numDetections, -1).reshape(-1, 4)
         bboxGTExpandedFlat   = bboxGT.unsqueeze(0).expand(self.proposalSize, -1, -1).reshape(-1, 4)
-        bboxL1Mat            = boxLoss(bboxPredExpandedFlat, bboxGTExpandedFlat).reshape(self.proposalSize, numDetections, -1).mean(dim = -1)
+        bboxL1Mat            = boxCriterion(bboxPredExpandedFlat, bboxGTExpandedFlat).reshape(self.proposalSize, numDetections, -1).mean(dim = -1)
         bboxGIoUMat          = GIoU(bboxProposal, bboxGT)
 
         hungarianCost = alphaClass * hungarianClassMat + alphaL1Box * bboxL1Mat + alphaGIoUBox * - bboxGIoUMat
@@ -127,6 +127,46 @@ class DeTr(nn.Module):
         rowIdx, colIdx = hungarianMatch(hungarianCost)
         
         return rowIdx, colIdx
+    
+    def loss(self, classLogits: Tensor, labels: List[Tensor],
+             bboxProposal: Tensor, bbox: List[Tensor], 
+             classCriterion: nn.Module, boxCriterion: nn.Module,
+             alphaClass: float = 1.0, alphaL1Box: float = 1.0, alphaGIoUBox: float = 1.0):
+        device = classLogits.device
+        batchSize = classLogits.shape[0]
+
+        # Since the hungarian algorithm works with 2D tensors, we need to loop through the batch
+        # Or I need to write custom hungarian algorithm for 3D tensors
+        
+        loss = 0.0
+        for i in range(batchSize):
+            numDetections = labels[i].shape[0]
+            classGT = labels[i].to(device)
+            bboxGT  = bbox[i].to(device) 
+            bboxConverted = bboxConvert(bboxProposal[i], in_fmt = "cxcywh", out_fmt = "xyxy")
+            if numDetections == 0:
+                classTargets = torch.full((self.proposalSize, ), self.numClasses, device = device, dtype = torch.long)
+                classLoss    = classCriterion(classLogits[i], classTargets).mean()
+                loss         += alphaClass * classLoss
+                continue
+
+            rowIdx, colIdx = self.hungarianLoss(classGT = classGT, classLogits = classLogits[i], 
+                                                    bboxGT  = bboxGT, bboxProposal = bboxConverted,
+                                                    classCriterion = classCriterion, boxCriterion = boxCriterion, 
+                                                    alphaClass = alphaClass, alphaL1Box = alphaL1Box, alphaGIoUBox = alphaGIoUBox)
+            
+            classTargets = torch.full((self.proposalSize, ), self.numClasses, device = device, dtype = torch.long)
+            classTargets[rowIdx] = classGT[colIdx]
+            classLoss = classCriterion(classLogits[i], classTargets).mean()
+
+            
+            bboxL1Loss = boxCriterion(bboxConverted[rowIdx], bboxGT[colIdx]).mean()
+            bboxGIoULoss = (1.0 - GIoU(bboxConverted, bboxGT)[rowIdx, colIdx]).mean()
+    
+            loss += alphaClass * classLoss + alphaL1Box * bboxL1Loss + alphaGIoUBox * bboxGIoULoss        
+            
+        loss /= batchSize
+        return loss
     
     def summary(self):
         

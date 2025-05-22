@@ -4,12 +4,10 @@ sys.path.insert(0, root)
 
 import torch
 import torch.nn as nn
-import torchvision.transforms.functional as F
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR, ConstantLR, SequentialLR, CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Subset, Dataset
-from torchvision.ops import generalized_box_iou as GIoU, box_convert as bboxConvert
+from torch.utils.data import DataLoader, Subset
 import xml.etree.ElementTree as ET
 
 from utils.imageTransformer import DeTr
@@ -139,39 +137,13 @@ if __name__ == "__main__":
 
 
             classLogits, bboxProposal = model(xBatch)
-            # Since the hungarian algorithm works with 2D tensors, we need to loop through the batch
-            # Or I need to write custom hungarian algorithm for 3D tensors
-            
-            loss = 0.0
-            for i in range(batchSize):
-                numDetections = labels[i].shape[0]
-                classGT = labels[i].to(gpu)
-                bboxGT  = bbox[i].to(gpu) 
-                bboxConverted = bboxConvert(bboxProposal[i], in_fmt = "cxcywh", out_fmt = "xyxy")
-                if numDetections == 0:
-                    classTargets = torch.full((model.proposalSize, ), len(CLASS), device = gpu, dtype = torch.long)
-                    classLoss    = classCriterion(classLogits[i], classTargets).mean()
-                    loss         = alphaClass * classLoss
-                    continue
 
-                rowIdx, colIdx = model.hungarianLoss(classGT = classGT, classLogits = classLogits[i], 
-                                                     bboxGT  = bboxGT, bboxProposal = bboxConverted,
-                                                     classLoss = classCriterion, boxLoss = bboxL1Criterion, 
-                                                     alphaClass = alphaClass, alphaL1Box = alphaL1Box, alphaGIoUBox = alphaGIoUBox)
-                
-                classTargets = torch.full((model.proposalSize, ), len(CLASS), device = gpu, dtype = torch.long)
-                classTargets[rowIdx] = classGT[colIdx]
-                classLoss = classCriterion(classLogits[i], classTargets).mean()
-
-                
-                bboxL1Loss = bboxL1Criterion(bboxConverted[rowIdx], bboxGT[colIdx]).mean()
-                bboxGIoULoss = (1.0 - GIoU(bboxConverted, bboxGT)[rowIdx, colIdx]).mean()
-        
-                loss += alphaClass * classLoss + alphaL1Box * bboxL1Loss + alphaGIoUBox * bboxGIoULoss        
+            loss = model.loss(classLogits = classLogits, labels = labels,
+                            bboxProposal = bboxProposal, bbox = bbox,
+                            classCriterion = classCriterion, boxCriterion = bboxL1Criterion,
+                            alphaClass = alphaClass, alphaL1Box = alphaL1Box, alphaGIoUBox = alphaGIoUBox)
             
-            loss /= batchSize
             loss.backward()
-
 
             # weightParams = [p for n, p in model.named_parameters()
             #                 if p.requires_grad and "weight" in n]
