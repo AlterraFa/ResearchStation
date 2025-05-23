@@ -76,6 +76,8 @@ class DeTr(nn.Module):
         
         self.hiddenDim = hiddenDim
         self.numClasses = numClasses
+        self.nEncoders = nEncoders
+        self.nDecoders = nDecoders
         for p in self.backbone.parameters():
             p.requires_grad = False
     
@@ -95,6 +97,7 @@ class DeTr(nn.Module):
 
     def MLP(self, inputDim, hiddenDim, outputDim, numLayers = 3):
         layers = []
+        layers += [nn.LayerNorm(inputDim)]
         for idx in range(numLayers):
             layers += [     nn.Linear(inputDim, hiddenDim) if idx == 0 
                        else nn.Linear(hiddenDim, outputDim) if idx == numLayers - 1 
@@ -120,11 +123,26 @@ class DeTr(nn.Module):
         bboxGTExpandedFlat   = bboxGT.unsqueeze(0).expand(self.proposalSize, -1, -1).reshape(-1, 4)
         bboxL1Mat            = boxCriterion(bboxPredExpandedFlat, bboxGTExpandedFlat).reshape(self.proposalSize, numDetections, -1).mean(dim = -1)
         bboxGIoUMat          = GIoU(bboxProposal, bboxGT)
+        bboxGIoUMat          = self.sanitizeCost(bboxGIoUMat)
 
         hungarianCost = alphaClass * hungarianClassMat + alphaL1Box * bboxL1Mat + alphaGIoUBox * - bboxGIoUMat
         hungarianCost = hungarianCost.cpu().detach().numpy()
 
-        rowIdx, colIdx = hungarianMatch(hungarianCost)
+        try:
+            rowIdx, colIdx = hungarianMatch(hungarianCost)
+        except Exception as e:
+            print("Hungarian Error: ", e)
+            print("Hungarian Cost: Inf - ", torch.any(torch.tensor(hungarianCost).isinf()), "NaN - ", torch.any(torch.tensor(hungarianCost).isnan()))
+            print("Hungarian Class Mat: Inf - ", torch.any(hungarianClassMat.isinf()), "NaN - ", torch.any(hungarianClassMat.isnan()))
+            print("Hungarian BBox L1 Mat: Inf - ", torch.any(bboxL1Mat.isinf()), "NaN - ", torch.any(bboxL1Mat.isnan()))
+            print("Hungarian BBox GIoU Mat: Inf - ", torch.any(bboxGIoUMat.isinf()), "NaN - ", torch.any(bboxGIoUMat.isnan()))
+            
+            x1p,y1p,x2p,y2p = bboxProposal.unbind(-1)
+            x1g,y1g,x2g,y2g = bboxGT      .unbind(-1)
+
+            bad_p = ((x2p <= x1p) | (y2p <= y1p)).nonzero()
+            bad_g = ((x2g <= x1g) | (y2g <= y1g)).nonzero()
+            print("degenerate proposals at", bad_p, "degenerate GTs at", bad_g)
         
         return rowIdx, colIdx
     
@@ -132,8 +150,14 @@ class DeTr(nn.Module):
              bboxProposal: Tensor, bbox: List[Tensor], 
              classCriterion: nn.Module, boxCriterion: nn.Module,
              alphaClass: float = 1.0, alphaL1Box: float = 1.0, alphaGIoUBox: float = 1.0):
+
+             
         device = classLogits.device
         batchSize = classLogits.shape[0]
+        if len(classLogits.shape) == 4:
+            H = classLogits.shape[1]
+        else:
+            H = 1
 
         # Since the hungarian algorithm works with 2D tensors, we need to loop through the batch
         # Or I need to write custom hungarian algorithm for 3D tensors
@@ -143,30 +167,54 @@ class DeTr(nn.Module):
             numDetections = labels[i].shape[0]
             classGT = labels[i].to(device)
             bboxGT  = bbox[i].to(device) 
-            bboxConverted = bboxConvert(bboxProposal[i], in_fmt = "cxcywh", out_fmt = "xyxy")
-            if numDetections == 0:
-                classTargets = torch.full((self.proposalSize, ), self.numClasses, device = device, dtype = torch.long)
-                classLoss    = classCriterion(classLogits[i], classTargets).mean()
-                loss         += alphaClass * classLoss
-                continue
 
-            rowIdx, colIdx = self.hungarianLoss(classGT = classGT, classLogits = classLogits[i], 
+            for headIdx in range(H):
+                bboxConverted = bboxConvert(bboxProposal[i][headIdx] if H > 1 else bboxProposal[i],
+                                            in_fmt = "cxcywh", out_fmt = "xyxy")
+                bboxConverted = self.sanitizeBox(bboxConverted)
+                singleClassLogits = classLogits[i][headIdx] if H > 1 else classLogits[i]
+
+                if numDetections == 0:
+                    classTargets = torch.full((self.proposalSize, ), self.numClasses, device = device, dtype = torch.long)
+                    classLoss    = classCriterion(singleClassLogits, classTargets).mean()
+                    loss         += alphaClass * classLoss
+                    continue
+
+                rowIdx, colIdx = self.hungarianLoss(classGT = classGT, classLogits = singleClassLogits, 
                                                     bboxGT  = bboxGT, bboxProposal = bboxConverted,
                                                     classCriterion = classCriterion, boxCriterion = boxCriterion, 
                                                     alphaClass = alphaClass, alphaL1Box = alphaL1Box, alphaGIoUBox = alphaGIoUBox)
-            
-            classTargets = torch.full((self.proposalSize, ), self.numClasses, device = device, dtype = torch.long)
-            classTargets[rowIdx] = classGT[colIdx]
-            classLoss = classCriterion(classLogits[i], classTargets).mean()
+                
+                classTargets = torch.full((self.proposalSize, ), self.numClasses, device = device, dtype = torch.long)
+                classTargets[rowIdx] = classGT[colIdx]
+                classLoss = classCriterion(singleClassLogits, classTargets).mean()
 
+                
+                bboxL1Loss = boxCriterion(bboxConverted[rowIdx], bboxGT[colIdx]).mean()
+                bboxGIoULoss = (1.0 - GIoU(bboxConverted, bboxGT)[rowIdx, colIdx]).mean()
+        
+                loss += alphaClass * classLoss + alphaL1Box * bboxL1Loss + alphaGIoUBox * bboxGIoULoss
             
-            bboxL1Loss = boxCriterion(bboxConverted[rowIdx], bboxGT[colIdx]).mean()
-            bboxGIoULoss = (1.0 - GIoU(bboxConverted, bboxGT)[rowIdx, colIdx]).mean()
-    
-            loss += alphaClass * classLoss + alphaL1Box * bboxL1Loss + alphaGIoUBox * bboxGIoULoss        
-            
-        loss /= batchSize
+        loss /= batchSize * H
         return loss
+    
+    @staticmethod
+    def sanitizeBox(xyxy: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        x1, y1, x2, y2 = xyxy.unbind(-1)
+        xa = torch.min(x1, x2)
+        xb = torch.max(x1, x2)
+        ya = torch.min(y1, y2)
+        yb = torch.max(y1, y2)
+
+        xb = torch.maximum(xb, xa + eps)
+        yb = torch.maximum(yb, ya + eps)
+
+        clean = torch.stack([xa, ya, xb, yb], dim=-1)
+        return torch.nan_to_num(clean, nan=0.0, posinf=1.0, neginf=0.0)
+    
+    @staticmethod
+    def sanitizeCost(cost: torch.Tensor, clip_val: float = 1e6) -> torch.Tensor:
+        return torch.nan_to_num(cost, nan=clip_val, posinf=clip_val, neginf=clip_val)
     
     def summary(self):
         

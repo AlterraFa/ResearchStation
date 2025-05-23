@@ -5,10 +5,12 @@ sys.path.insert(0, root)
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Subset
 import xml.etree.ElementTree as ET
+from torchvision import datasets, transforms
+from torchvision.ops import box_iou as IoU
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.data import DataLoader, Subset
+
 
 from utils.imageTransformer import DeTr
 from utils.helper import EarlyStopping, DetectionDataset
@@ -136,32 +138,28 @@ if __name__ == "__main__":
             batchSize = xBatch.shape[0]
 
 
-            classLogits, bboxProposal = model(xBatch)
-
-            loss = model.loss(classLogits = classLogits, labels = labels,
-                            bboxProposal = bboxProposal, bbox = bbox,
-                            classCriterion = classCriterion, boxCriterion = bboxL1Criterion,
-                            alphaClass = alphaClass, alphaL1Box = alphaL1Box, alphaGIoUBox = alphaGIoUBox)
+            classLogits, bboxProposal = model(xBatch, auxiliary = True)
             
+
+            supervisedLoss = model.loss(classLogits = classLogits, labels = labels,
+                                        bboxProposal = bboxProposal, bbox = bbox,
+                                        classCriterion = classCriterion, boxCriterion = bboxL1Criterion,
+                                        alphaClass = alphaClass, alphaL1Box = alphaL1Box, alphaGIoUBox = alphaGIoUBox)
+            
+            weightParams = [p for n, p in model.named_parameters()
+                            if p.requires_grad and "weight" in n]
+            l1Norm = sum(p.abs().sum() for p in weightParams)
+            l2Norm = sum(p.pow(2.0).sum() for p in weightParams)
+            
+            loss = supervisedLoss \
+                    + l1Norm * l1 \
+                    + l2Norm * l2
             loss.backward()
-
-            # weightParams = [p for n, p in model.named_parameters()
-            #                 if p.requires_grad and "weight" in n]
-            # l1Norm = sum(p.abs().sum() for p in weightParams)
-            # l2Norm = sum(p.pow(2.0).sum() for p in weightParams)
-            
-            # loss = supervisedLoss \
-            #         + consistencyLoss \
-            #         + l1Norm * l1 \
-            #         + l2Norm * l2
-            # loss.backward()
-            # optimizer.step()
+            optimizer.step()
 
 
-            # trainMetrics["Consistency"] += consistencyLoss.item()
-            # trainMetrics["Total"]       += loss.item()
-            # trainMetrics["Supervised"]  += supervisedLoss.item()
-            # trainMetrics["Accuracy"]    += correct.item()
+            trainMetrics["Total"]       += loss.item()
+            trainMetrics["Supervised"]  += supervisedLoss.item()
             
             trainBar.set_postfix({
                 "T": f"{trainMetrics['Total']/ (trainBar.n+1):.3f}",
