@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 from torch import randperm
-from torchvision.transforms  import functional as F
+from torchvision.transforms  import functional as TF
 
 from typing import Tuple, List, Optional, Callable, Union, Sequence
 
@@ -303,8 +303,8 @@ class DetectionDataset(Dataset):
         boxes = torch.tensor([
             [
             float(o['bndbox']['xmin']),
-            float(o['bndbox']['xmax']),
             float(o['bndbox']['ymin']),
+            float(o['bndbox']['xmax']),
             float(o['bndbox']['ymax'])
             ]
         for o in objs], dtype = torch.float32)
@@ -313,18 +313,18 @@ class DetectionDataset(Dataset):
         H, W = img.shape[1:]
         scale = min(self.imgSize / H, self.imgSize / W)
         newH, newW = int(H * scale), int(W * scale)
-        img = F.resize(img, (newH, newW))
+        img = TF.resize(img, (newH, newW))
         padH, padW = self.imgSize - newH, self.imgSize - newW
         left = padW // 2
         right = padW - left
         top = padH // 2
         bottom = padH - top
-        img = F.pad(img, (left, top, right, bottom), fill = 0)
+        img = TF.pad(img, (left, top, right, bottom), fill = 0)
         
         boxes = boxes.clone().float()
         boxes *= scale
-        boxes[:, [0, 1]] += left
-        boxes[:, [2, 3]] += top
+        boxes[:, [0, 2]] += left
+        boxes[:, [1, 3]] += top
         boxes /= self.imgSize
         
         return img, (labels, boxes)
