@@ -123,9 +123,9 @@ class DeTr(nn.Module):
         bboxGTExpandedFlat   = bboxGT.unsqueeze(0).expand(self.proposalSize, -1, -1).reshape(-1, 4)
         bboxL1Mat            = boxCriterion(bboxPredExpandedFlat, bboxGTExpandedFlat).reshape(self.proposalSize, numDetections, -1).mean(dim = -1)
         bboxGIoUMat          = GIoU(bboxProposal, bboxGT)
-        bboxGIoUMat          = self.sanitizeCost(bboxGIoUMat)
 
         hungarianCost = alphaClass * hungarianClassMat + alphaL1Box * bboxL1Mat + alphaGIoUBox * - bboxGIoUMat
+        hungarianCost = self.sanitizeCost(hungarianCost)
         hungarianCost = hungarianCost.cpu().detach().numpy()
 
         try:
@@ -143,8 +143,10 @@ class DeTr(nn.Module):
             bad_p = ((x2p <= x1p) | (y2p <= y1p)).nonzero()
             bad_g = ((x2g <= x1g) | (y2g <= y1g)).nonzero()
             print("degenerate proposals at", bad_p, "degenerate GTs at", bad_g)
+            
+            exit(-5)
         
-        return rowIdx, colIdx
+        return rowIdx, colIdx, hungarianClassMat, bboxL1Mat, bboxGIoUMat
     
     def loss(self, classLogits: Tensor, labels: List[Tensor],
              bboxProposal: Tensor, bbox: List[Tensor], 
@@ -180,10 +182,10 @@ class DeTr(nn.Module):
                     loss         += alphaClass * classLoss
                     continue
 
-                rowIdx, colIdx = self.hungarianLoss(classGT = classGT, classLogits = singleClassLogits, 
-                                                    bboxGT  = bboxGT, bboxProposal = bboxConverted,
-                                                    classCriterion = classCriterion, boxCriterion = boxCriterion, 
-                                                    alphaClass = alphaClass, alphaL1Box = alphaL1Box, alphaGIoUBox = alphaGIoUBox)
+                rowIdx, colIdx, hungarianClassMat, bboxL1Mat, bboxGIoUMat = self.hungarianLoss(classGT = classGT, classLogits = singleClassLogits, 
+                                                                            bboxGT  = bboxGT, bboxProposal = bboxConverted,
+                                                                            classCriterion = classCriterion, boxCriterion = boxCriterion, 
+                                                                            alphaClass = alphaClass, alphaL1Box = alphaL1Box, alphaGIoUBox = alphaGIoUBox)
                 
                 classTargets = torch.full((self.proposalSize, ), self.numClasses, device = device, dtype = torch.long)
                 classTargets[rowIdx] = classGT[colIdx]
@@ -191,9 +193,17 @@ class DeTr(nn.Module):
 
                 
                 bboxL1Loss = boxCriterion(bboxConverted[rowIdx], bboxGT[colIdx]).mean()
-                bboxGIoULoss = (1.0 - GIoU(bboxConverted, bboxGT)[rowIdx, colIdx]).mean()
+                bboxGIoULoss = (1.0 - GIoU(bboxConverted, bboxGT)[rowIdx, colIdx])
+                bboxGIoULoss = self.sanitizeCost(bboxGIoULoss).mean()
         
                 loss += alphaClass * classLoss + alphaL1Box * bboxL1Loss + alphaGIoUBox * bboxGIoULoss
+                if loss < 0:
+                    print("Loss is negative, something is wrong")
+                    print("GIoU Loss: ", bboxGIoULoss)
+                    print(bboxGIoULoss.max(), bboxGIoULoss.min(), bboxGIoULoss.mean())
+                    print(bboxGT.max(), bboxGT.min(), bboxGT.mean())
+                    exit(-5)
+                    
             
         loss /= batchSize * H
         return loss
