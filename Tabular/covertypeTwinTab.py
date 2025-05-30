@@ -1,18 +1,14 @@
-"""Important: This model can not be pretrained due to limited Categorical features of covertype dataset (only 2 categorical features).
-since pretraining is applied on the transformer part only (input to the transformer are categorical features).
-Which is also why it performs so poorly on this dataset."""
 import os
 import torch
 import pandas as pd
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
-import torch.random
 
-from tabTransformer import TabTransformer
+from tabTransformer import TwinTab
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from utils.helper import EarlyStopping
-from torch.utils.data import TensorDataset, Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from torchmetrics.classification import MulticlassAUROC
 
@@ -81,7 +77,7 @@ if __name__ == "__main__":
     valDs   = CatContDataset(splits['val'][:2], splits['val'][2])
     testDs  = CatContDataset(splits['test'][:2], splits['test'][2])
 
-    trainLoader = DataLoader(trainDs, batch_size = 2048, shuffle = True, num_workers = 12, persistent_workers = False, pin_memory = True)
+    trainLoader = DataLoader(trainDs, batch_size = 2048 // 2, shuffle = True, num_workers = 12, persistent_workers = False, pin_memory = True)
     valLoader   = DataLoader(valDs, batch_size = 256, shuffle = False, num_workers = 12, persistent_workers = False, pin_memory = True)
     testLoader  = DataLoader(testDs, batch_size = 256, shuffle = False, num_workers = 12, persistent_workers = False, pin_memory = True)
     
@@ -89,24 +85,24 @@ if __name__ == "__main__":
     numCont = splits['train'][0].shape[1]
     numCat = [int(splits['train'][1][:, i].max().item()) + 1 for i in range(splits['train'][1].shape[1])]
 
-    model = TabTransformer(numCont    = numCont, 
-                           numCat     = numCat, 
-                           numClasses = numClasses, 
-                           numLayers  = 14,
-                           dropout = .12).to(device)
-    
-    writer = SummaryWriter(log_dir = f"./runs/covtype/{model.__class__.__name__}")
+    model = TwinTab(numCont    = numCont, 
+                    numCat     = numCat, 
+                    numClasses = numClasses, 
+                    numEnc     = 6,
+                    dropout    = .1).to(device)
+
+    writer = SummaryWriter(log_dir = "runs/covtype/TwinTab")
     data, _ = next(iter(trainLoader))
     writer.add_graph(model, (data[0].to(device), data[1].to(device)))
     writer.flush()
 
 
-    epochs = 250; initLR = 2e-3; finalLR = 1e-6; l1 = 1e-3; l2 = 1e-4
+    epochs = 100; initLR = 2e-3; finalLR = 1e-6; l1 = 1e-3; l2 = 1e-4
     
     classCriterion  = nn.CrossEntropyLoss(label_smoothing = .1, reduction = "mean")
     optimizer       = optim.AdamW(model.parameters(), lr = initLR)
     scheduler       = CosineAnnealingLR(optimizer = optimizer, T_max = epochs, eta_min = finalLR)
-    earlyStop       = EarlyStopping(patience = 50, path = f"./runs/covtype/{model.__class__.__name__}/best.pt", verbose = True)
+    earlyStop       = EarlyStopping(patience = 50, path = f"./runs/covtype/TwinTab/best.pt", verbose = True)
     auc             = MulticlassAUROC(num_classes = numClasses, average = "macro").to(device)
 
     pbar = tqdm(range(epochs), desc="Training Epochs", position = 0)
@@ -224,3 +220,4 @@ if __name__ == "__main__":
         earlyStop(valMetrics['Supervised'], model)
         if earlyStop.early_stop:
             tqdm.write("Early stopping triggered.")
+            break

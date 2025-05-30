@@ -114,6 +114,5 @@ class TwinTab(nn.Module):
 
         return output
         
-    
     def forwardPretrain(self):
         ...
