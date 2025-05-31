@@ -3,22 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.transformer import TransformerEncoder
+from utils.transformer import TransformerEncoder, AttentionPooling
 
-class AttentionPooling(nn.Module):
-    def __init__(self, modelDim):
-        super().__init__()
-        self.attn = nn.Sequential(
-            nn.Linear(modelDim, modelDim // 2),
-            nn.Tanh(),
-            nn.Linear(modelDim // 2, 1)
-        )
-
-    def forward(self, x):
-        scores = self.attn(x)
-        weights = F.softmax(scores, dim=1)
-        pooled = torch.sum(weights * x, dim=1)
-        return pooled
 
 class TabTransformer(nn.Module):
     def __init__(self, numCont: int, numCat: list[int], numClasses: int,  numLayers: int = 6, modelDim: int = 512, numHeads: int = 8, dropout: float = 0.1):

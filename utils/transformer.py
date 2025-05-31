@@ -6,10 +6,10 @@ os.environ['TORCH_USE_CUDA_DSA'] = '1'
 os.environ['HF_DATASETS_OFFLINE'] = '1'
     
 import torch
+import torch.nn.functional as F
 from torch import nn, Tensor
 from transformers import GPT2Tokenizer
 from typing import Union, Tuple, Optional, List
-
 
 
 class VocabEncoding:
@@ -221,6 +221,20 @@ class LayerNormalization(nn.Module):
         σ  = torch.sqrt(σ2 + 1e-5)
         return self.gamma * ((x - μ)/σ) + self.beta  
         
+class AttentionPooling(nn.Module):
+    def __init__(self, modelDim):
+        super().__init__()
+        self.attn = nn.Sequential(
+            nn.Linear(modelDim, modelDim // 2),
+            nn.Tanh(),
+            nn.Linear(modelDim // 2, 1)
+        )
+
+    def forward(self, x):
+        scores = self.attn(x)
+        weights = F.softmax(scores, dim=1)
+        pooled = torch.sum(weights * x, dim=1)
+        return pooled
 
 class TransformerEncoder(nn.Module):
     def __init__(self,
