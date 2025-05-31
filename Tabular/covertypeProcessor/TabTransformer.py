@@ -1,7 +1,10 @@
 """Important: This model can not be pretrained due to limited Categorical features of covertype dataset (only 2 categorical features).
 since pretraining is applied on the transformer part only (input to the transformer are categorical features).
 Which is also why it performs so poorly on this dataset."""
-import os
+import os, sys
+root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+sys.path.insert(0, root)
+
 import torch
 import pandas as pd
 import numpy as np
@@ -9,7 +12,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.random
 
-from tabTransformer import TabTransformer
+from utils.tabTransformer import TabTransformer
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from utils.helper import EarlyStopping
 from torch.utils.data import TensorDataset, Dataset, DataLoader
@@ -65,7 +68,7 @@ if __name__ == "__main__":
     device = torch.device("cuda")
     torch.random.manual_seed(42)
 
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "datasets/covertype/covtype.data.gz"))
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../datasets/covertype/covtype.data.gz"))
     df = pd.read_csv(root, compression = 'gzip', header = None, nrows = 300000)
 
 

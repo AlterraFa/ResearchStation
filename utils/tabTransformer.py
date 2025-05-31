@@ -1,13 +1,9 @@
-import os, sys
-root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, root)
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.transformer import TransformerEncoder, NoEncoding
-from einops.layers.torch import Rearrange
+from utils.transformer import TransformerEncoder
 
 class AttentionPooling(nn.Module):
     def __init__(self, modelDim):
@@ -114,5 +110,3 @@ class TwinTab(nn.Module):
 
         return output
         
-    def forwardPretrain(self):
-        ...

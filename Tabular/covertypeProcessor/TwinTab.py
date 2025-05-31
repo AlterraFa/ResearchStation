@@ -1,11 +1,14 @@
-import os
+import os, sys
+root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+sys.path.insert(0, root)
+
 import torch
 import pandas as pd
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 
-from tabTransformer import TwinTab
+from utils.tabTransformer import TwinTab
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from utils.helper import EarlyStopping
 from torch.utils.data import Dataset, DataLoader
@@ -61,7 +64,7 @@ if __name__ == "__main__":
     device = torch.device("cuda")
     torch.random.manual_seed(42)
 
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "datasets/covertype/covtype.data.gz"))
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../datasets/covertype/covtype.data.gz"))
     df = pd.read_csv(root, compression = 'gzip', header = None, nrows = 300000)
 
 
