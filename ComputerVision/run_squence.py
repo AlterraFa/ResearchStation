@@ -8,22 +8,11 @@ import matplotlib.pyplot as plt
 
 from tqdm.auto import tqdm
 
+# Loading helpers
 def load_bin(pcPath: str) -> np.ndarray:
     data = np.fromfile(pcPath, dtype = np.float32)
     return data.reshape(-1, 4)
 
-def colorized_by_z(xyz: np.ndarray) -> np.ndarray: 
-    z = xyz[:, 2]
-    zNorm = (z - z.min()) / (np.ptp(z) + 1e-6)
-    return plt.get_cmap('viridis')(zNorm)[:, :3]
-
-def update(vis: o3d.visualization.Visualizer, 
-           pcd: o3d.geometry.PointCloud,
-           delay: int):
-    vis.add_geometry(pcd)
-    vis.poll_events()
-    vis.update_renderer()
-    time.sleep(delay)
     
 def load_labels(label_path: str) -> list[dict]:
     """Parse KITTI label file into a list of dicts with dims, loc, rot_y."""
@@ -53,6 +42,37 @@ def load_calib(calibPath: str) -> np.ndarray:
                 return T
     raise FileNotFoundError(f"No Tr_velo_to_cam in {calibPath}")
 
+# For visualization purposes
+def colorized_by_z(xyz: np.ndarray) -> np.ndarray: 
+    z = xyz[:, 2]
+    zNorm = (z - z.min()) / (np.ptp(z) + 1e-6)
+    return plt.get_cmap('viridis')(zNorm)[:, :3]
+
+def update(vis: o3d.visualization.Visualizer, 
+           pcd: o3d.geometry.PointCloud,
+           delay: int):
+    vis.add_geometry(pcd)
+    vis.poll_events()
+    vis.update_renderer()
+    time.sleep(delay)
+
+def create_line_set(corners: np.ndarray, color=(1,0,0)) -> o3d.geometry.LineSet:
+    """Build an Open3D LineSet from 8 corners (any coord frame)."""
+    # 12 edges of a box
+    edges = [
+        [0,1],[1,2],[2,3],[3,0],
+        [4,5],[5,6],[6,7],[7,4],
+        [0,4],[1,5],[2,6],[3,7],
+    ]
+    colors = [color for _ in edges]
+    ls = o3d.geometry.LineSet(
+        points  = o3d.utility.Vector3dVector(corners),
+        lines   = o3d.utility.Vector2iVector(edges)
+    )
+    ls.colors = o3d.utility.Vector3dVector(colors)
+    return ls
+
+# Calculation from camera frustums
 def get_3D_box_corneres(obj: dict) -> np.ndarray:
     """
     Returns an (8,3) array of corner points in camera coords.
@@ -78,24 +98,7 @@ def get_3D_box_corneres(obj: dict) -> np.ndarray:
     corners3d = (R @ corners).T
     return corners3d
 
-def create_line_set(corners: np.ndarray, color=(1,0,0)) -> o3d.geometry.LineSet:
-    """Build an Open3D LineSet from 8 corners (any coord frame)."""
-    # 12 edges of a box
-    edges = [
-        [0,1],[1,2],[2,3],[3,0],
-        [4,5],[5,6],[6,7],[7,4],
-        [0,4],[1,5],[2,6],[3,7],
-    ]
-    colors = [color for _ in edges]
-    ls = o3d.geometry.LineSet(
-        points  = o3d.utility.Vector3dVector(corners),
-        lines   = o3d.utility.Vector2iVector(edges)
-    )
-    ls.colors = o3d.utility.Vector3dVector(colors)
-    return ls
-
-
-
+# Running main
 def visualize_seq(train_folder: str, fps: float = 10) -> None:
     frame_delay = 1 / fps
 
