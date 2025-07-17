@@ -7,96 +7,9 @@ import open3d as o3d
 import matplotlib.pyplot as plt
 
 from tqdm.auto import tqdm
-
-# Loading helpers
-def load_bin(pcPath: str) -> np.ndarray:
-    data = np.fromfile(pcPath, dtype = np.float32)
-    return data.reshape(-1, 4)
-
-    
-def load_labels(label_path: str) -> list[dict]:
-    """Parse KITTI label file into a list of dicts with dims, loc, rot_y."""
-    objs = []
-    with open(label_path, 'r') as f:
-        for line in f:
-            data = line.split()
-            cls = data[0]
-            if cls == 'DontCare': 
-                continue
-            h, w, l = map(float, data[8:11])
-            x, y, z = map(float, data[11:14])
-            rot_y = float(data[14])
-            objs.append({'h':h, 'w':w, 'l':l,
-                         'x':x, 'y':y, 'z':z,
-                         'rot_y':rot_y})
-    return objs
-
-def load_calib(calibPath: str) -> np.ndarray:
-    with open(calibPath, 'r') as f:
-        for line in f:
-            if line.startswith('Tr_velo_to_cam:'):
-                num_str = line.split(':', 1)[1].strip()
-                vals = np.fromstring(num_str, sep=' ')
-                T = np.eye(4, dtype=np.float32)
-                T[:3, :4] = vals.reshape(3, 4)
-                return T
-    raise FileNotFoundError(f"No Tr_velo_to_cam in {calibPath}")
-
-# For visualization purposes
-def colorized_by_z(xyz: np.ndarray) -> np.ndarray: 
-    z = xyz[:, 2]
-    zNorm = (z - z.min()) / (np.ptp(z) + 1e-6)
-    return plt.get_cmap('viridis')(zNorm)[:, :3]
-
-def update(vis: o3d.visualization.Visualizer, 
-           pcd: o3d.geometry.PointCloud,
-           delay: int):
-    vis.add_geometry(pcd)
-    vis.poll_events()
-    vis.update_renderer()
-    time.sleep(delay)
-
-def create_line_set(corners: np.ndarray, color=(1,0,0)) -> o3d.geometry.LineSet:
-    """Build an Open3D LineSet from 8 corners (any coord frame)."""
-    # 12 edges of a box
-    edges = [
-        [0,1],[1,2],[2,3],[3,0],
-        [4,5],[5,6],[6,7],[7,4],
-        [0,4],[1,5],[2,6],[3,7],
-    ]
-    colors = [color for _ in edges]
-    ls = o3d.geometry.LineSet(
-        points  = o3d.utility.Vector3dVector(corners),
-        lines   = o3d.utility.Vector2iVector(edges)
-    )
-    ls.colors = o3d.utility.Vector3dVector(colors)
-    return ls
-
-# Calculation from camera frustums
-def get_3D_box_corneres(obj: dict) -> np.ndarray:
-    """
-    Returns an (8,3) array of corner points in camera coords.
-    Follows KITTI convention: y is down, box bottom at y.
-    """
-    l, w, h = obj['l'], obj['w'], obj['h']
-    x, y, z = obj['x'], obj['y'], obj['z']
-
-    # corners in the object frame (at (0, 0, 0))
-    x_c = [ l/2,  l/2, -l/2, -l/2,  l/2,  l/2, -l/2, -l/2]
-    y_c = [   0 ,    0 ,    0 ,    0 ,   -h ,   -h ,   -h ,   -h ]
-    z_c = [ w/2, -w/2, -w/2,  w/2,  w/2, -w/2, -w/2,  w/2]
-    corners = np.vstack((x_c, y_c, z_c, np.ones_like(x_c)))
-    
-    # rotation around Y (meaning rotating around v)
-    ry = obj['rot_y']
-    R = np.array([
-        [ np.cos(ry), 0, np.sin(ry), x],
-        [          0, 1,          0, y],
-        [-np.sin(ry), 0, np.cos(ry), z],
-        [0          , 0, 0         , 1]
-    ], dtype=np.float32)
-    corners3d = (R @ corners).T
-    return corners3d
+from utils_3d.loader import *
+from utils_3d.visualization import *
+from utils_3d.math_helper import *
 
 # Running main
 def visualize_seq(train_folder: str, fps: float = 10) -> None:
@@ -154,7 +67,7 @@ def visualize_seq(train_folder: str, fps: float = 10) -> None:
         update(vis, pcd, frame_delay)
     vis.destroy_window()
     
-def inspect_frame(index: int, train_folder: str) -> None:
+def inspect_frame(index: int, train_folder: str, crop_mode: bool) -> None:
     """Load one .bin + its calib & label, show pointcloud with boxes."""
     
     frame_files = sorted(glob.glob(train_folder + "/velodyne/*"))
@@ -164,10 +77,13 @@ def inspect_frame(index: int, train_folder: str) -> None:
     calibFile = os.path.join(train_folder, 'calib',    f"{idx}.txt")
     labelFile = os.path.join(train_folder, 'label_2',  f"{idx}.txt")
 
-    pc    = load_bin(bin_file)[:, :3]
-    Tcam  = load_calib(calibFile)
-    labels= load_labels(labelFile)
+    pc       = load_bin(bin_file)[:, :3]
+    Tcam     = load_calib(calibFile)
+    labels   = load_labels(labelFile)
     camToVel = np.linalg.inv(Tcam)
+
+    if crop_mode:
+        pc = crop_pc(pc)
 
     # build pcd and boxes
     pcd = o3d.geometry.PointCloud(
@@ -180,8 +96,13 @@ def inspect_frame(index: int, train_folder: str) -> None:
         corners_Vel = (camToVel @ corners_cam.T).T[:, :3]
         boxGeoms.append(create_line_set(corners_Vel))
 
+    # Origin point
+    origin_sphere = o3d.geometry.TriangleMesh.create_sphere(radius = 0.2)
+    origin_sphere.paint_uniform_color([1.0, 0.0, 0.0])
+    origin_sphere.translate([0, 0, 0])
+
     o3d.visualization.draw_geometries(
-        [pcd, *boxGeoms],
+        [pcd, *boxGeoms, origin_sphere],
         window_name=f"Inspect frame {idx}"
     )
 
@@ -189,23 +110,27 @@ def inspect_frame(index: int, train_folder: str) -> None:
 
 
 if __name__ == "__main__":
-    binFolder = "./dataset/training"
     
     p = argparse.ArgumentParser(
         description="KITTI viewer: full sequence or single-frame inspect"
     )
     p.add_argument("train_folder",
-        help="root containing velodyne/, calib/, label_2/")
+        help = "root containing velodyne/, calib/, label_2/")
     p.add_argument("--fps", type=float, default=None,
-        help="playback speed for sequence")
+        help = "playback speed for sequence")
     p.add_argument("--inspect", type=int, default=None,
-        help="Index of scene to inspect")
+        help = "index of scene to inspect")
+    p.add_argument("--enable_crop", action = "store_true", dest="crop_mode",
+        help = "only crop the forward region (default: False)")
+    p.add_argument("--disable_crop", action = "store_false", dest="crop_mode",
+        help = "disable cropping")
+    p.set_defaults(crop_mode = False)
     args = p.parse_args()
     
     if args.fps and args.inspect:
         print("Inspection mode and visualization mode were specified. Exiting ...")
         exit(2134)
     elif args.inspect: 
-        inspect_frame(args.inspect, args.train_folder)
+        inspect_frame(args.inspect, args.train_folder, args.crop_mode)
     elif args.fps:
         visualize_seq(args.train_folder, args.fps)
