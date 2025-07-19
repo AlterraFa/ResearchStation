@@ -18,6 +18,8 @@ class Pillarization():
         self.num_x_cells = int(np.ceil(width / resolution))
         self.num_y_cells = int(np.ceil(length / resolution))
         self.total_pillars = self.num_x_cells * self.num_y_cells
+
+        print(f"Pseudo image resolution: ({self.num_x_cells}, {self.num_y_cells})")
         
         self.x_centers = xmin + (np.arange(self.num_x_cells) + 0.5) * resolution
         self.y_centers = ymin + (np.arange(self.num_y_cells) + 0.5) * resolution

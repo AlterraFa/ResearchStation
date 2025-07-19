@@ -19,17 +19,6 @@ if __name__ == "__main__":
     
     np.random.seed(12)
     
-    width  = xmax - xmin
-    length = ymax - ymin
-    
-    num_x_cells = int(np.ceil(length / resolution))
-    num_y_cells = int(np.ceil(width / resolution))
-    total_pillars = num_x_cells * num_y_cells
-    
-    x_pillar_centers = xmin + (np.arange(num_x_cells) + 0.5) * resolution
-    y_pillar_centers = ymin + (np.arange(num_y_cells) + 0.5) * resolution
-    
-    print(f"Pseudo image resolution: ({num_x_cells}, {num_y_cells})")
     pc_list = load_multi_pc("./dataset/training/truncated_vel", to_idx = 1000)
     
     pillar = Pillarization(xmax, xmin, ymax, ymin, resolution, P, N)
