@@ -1,5 +1,38 @@
 import numpy as np
+from numba import njit, prange
 
+@njit(parallel=True)
+def _truncate_pc_numba(pc_mapping, pts_xyz, reflectance,
+                       target_pillar, target_pc):
+    n_pts = pc_mapping.shape[0]
+    keep_mask = np.ones(n_pts, np.bool_)
+
+    # 1) count per pillar
+    counts = np.bincount(pc_mapping, minlength=target_pillar)
+
+    # 2) for each pillar in parallel
+    for pid in prange(target_pillar):
+        cnt = counts[pid]
+        if cnt > target_pc:
+            # collect indices of that pillar
+            idxs = np.empty(cnt, np.int64)
+            c = 0
+            for i in range(n_pts):
+                if pc_mapping[i] == pid:
+                    idxs[c] = i
+                    c += 1
+
+            # pick exactly (cnt - target_pc) to drop
+            to_drop = np.random.choice(cnt, cnt - target_pc, replace=False)
+            for j in to_drop:
+                keep_mask[idxs[j]] = False
+
+    # 3) apply mask
+    return (
+        pc_mapping[keep_mask],
+        pts_xyz[keep_mask],
+        reflectance[keep_mask]
+    )
 
 class Pillarization():
     def __init__(self, xmax: float, xmin: float, ymax: float, ymin: float, resolution: float, P: int, N: int):
@@ -42,28 +75,38 @@ class Pillarization():
 
         # inverse contains index of each point to its corresponding pillar_idx (recover each point grid via pillar_idx[inv[i]])
         pillar_idx, inv = np.unique(flat_pillar_idx, return_inverse=True) 
-        k = pillar_idx.size  # number of non-empty pillars
-        
 
         # Truncate pillar when k > P
-        pc_state = self.truncate_pillar(pillar_index = pillar_idx, pc_mapping = inv,
-                                          pts_xyz = pts_xyz, reflectance = reflectance)
+        pc_state = self.truncate_pillar(pillar_index = pillar_idx, 
+                                        pc_mapping = inv, 
+                                        pts_xyz = pts_xyz, 
+                                        reflectance = reflectance)
         inv, pts_xyz, reflectance, pillar_idx = pc_state
 
         # Pad pillar when k < P
-        pc_state = self.pad_pillars(pillar_index = pillar_idx, pc_mapping = inv,
-                                      pts_xyz = pts_xyz, reflectance = reflectance)
+        pc_state = self.pad_pillars(pillar_index = pillar_idx, 
+                                    pc_mapping = inv, 
+                                    pts_xyz = pts_xyz, 
+                                    reflectance = reflectance)
         inv, pts_xyz, reflectance, pillar_idx = pc_state
 
         # Truncate pointcloud when size > N
-        pc_state = self.truncate_pc(pc_mapping = inv, pts_xyz = pts_xyz, reflectance = reflectance)
+        pc_state = self.truncate_pc(pc_mapping = inv, 
+                                    pts_xyz = pts_xyz, 
+                                    reflectance = reflectance)
         inv, pts_xyz, reflectance = pc_state
             
         # Calculate distance of each point to its arithmetic mean, distance to pillar center        
-        dist_to_centroid, dist_to_pillar = self.pillar_stats(pts_xyz = pts_xyz, pillar_index = pillar_idx, pc_mapping = inv)
+        dist_to_centroid, dist_to_pillar = self.pillar_stats(pts_xyz = pts_xyz, 
+                                                             pillar_index = pillar_idx, 
+                                                             pc_mapping = inv)
 
         # Pad pointcloud when size < N (Note: padding must be behind lifting calculation to avoid shifting centroid)
-        pc_state = self.pad_pc(pc_mapping = inv, pts_xyz = pts_xyz, reflectance = reflectance, dist_to_centroid = dist_to_centroid, dist_to_pillar = dist_to_pillar)
+        pc_state = self.fast_pad_pc(pc_mapping = inv, 
+                                    pts_xyz = pts_xyz, 
+                                    reflectance = reflectance, 
+                                    dist_to_centroid = dist_to_centroid, 
+                                    dist_to_pillar = dist_to_pillar)
         inv, pts_xyz, reflectance, dist_to_centroid, dist_to_pillar = pc_state
 
         
@@ -149,6 +192,11 @@ class Pillarization():
             pts_xyz[keep_mask],
             reflectance[keep_mask]
         )
+
+    def fast_truncate_pc(self, 
+                        pc_mapping: np.ndarray, pts_xyz: np.ndarray, 
+                        reflectance: np.ndarray):
+        return _truncate_pc_numba(pc_mapping, pts_xyz, reflectance, self.target_pillar, self.target_pc)
         
     def pad_pc(self, 
                pc_mapping: np.ndarray, pts_xyz: np.ndarray, reflectance: np.ndarray, 
@@ -187,6 +235,34 @@ class Pillarization():
             np.concatenate([reflectance, dummy_reflectance]),
             np.vstack([dist_to_centroid, dummy_dist_centroid]),
             np.vstack([dist_to_pillar,   dummy_dist_pillar])
+        )
+
+    
+    def fast_pad_pc(self, 
+                    pc_mapping: np.ndarray, pts_xyz: np.ndarray, reflectance: np.ndarray, 
+                    dist_to_centroid: np.ndarray, dist_to_pillar: np.ndarray):
+        """Note: padding must be behind lifting calculation to avoid shifting centroid"""
+        counts = np.bincount(pc_mapping, minlength=self.target_pillar)
+        missing = np.where(counts < self.target_pc)[0]
+        if missing.size == 0:
+            return pc_mapping, pts_xyz, reflectance, dist_to_centroid, dist_to_pillar
+
+        missing_counts = self.target_pc - counts[missing]
+        total_pad = missing_counts.sum()
+
+        dummy_inv = np.repeat(missing, missing_counts)
+
+        dummy_xyz       = np.zeros((total_pad, 3),  dtype=pts_xyz.dtype)
+        dummy_refl      = np.zeros((total_pad,    ), dtype=reflectance.dtype)
+        dummy_centroid  = np.zeros((total_pad, 3),  dtype=dist_to_centroid.dtype)
+        dummy_pillar    = np.zeros((total_pad, 2),  dtype=dist_to_pillar.dtype)
+
+        return (
+            np.concatenate([pc_mapping,    dummy_inv]),
+            np.vstack(    [pts_xyz,        dummy_xyz]),
+            np.concatenate([reflectance,   dummy_refl]),
+            np.vstack(    [dist_to_centroid, dummy_centroid]),
+            np.vstack(    [dist_to_pillar,   dummy_pillar])
         )
 
 
