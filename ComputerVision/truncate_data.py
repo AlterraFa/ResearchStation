@@ -3,10 +3,25 @@ import numpy as np
 import argparse
 import glob
 import os, sys
+import configparser
 
 from tqdm.auto import tqdm
 from utils_3d.math_helper import crop_pc
-from utils_3d.loader import load_bin, save_bin
+from utils_3d.disk import load_bin, save_bin
+
+config = configparser.ConfigParser()
+config.read("./model/config.ini")
+
+dimension_arg = config["Dimension"]
+pillar_arg    = config["Pillarization"]
+
+xmin       = dimension_arg.getfloat("xmin")
+xmax       = dimension_arg.getfloat("xmax")
+ymin       = dimension_arg.getfloat("ymin")
+ymax       = dimension_arg.getfloat("ymax")
+zmax       = dimension_arg.getfloat("zmax")
+zmin       = dimension_arg.getfloat("zmin")
+resolution = dimension_arg.getfloat("resolution")
 
 def truncate(train_folder: str):
     os.makedirs(train_folder + "/truncated_vel", exist_ok = True)
@@ -18,7 +33,7 @@ def truncate(train_folder: str):
         name, ext  = os.path.splitext(basename)
 
         pc = load_bin(frame_path)
-        pc = crop_pc(pc)
+        pc = crop_pc(pc, xmax = xmax, xmin = xmin, ymax = ymax, ymin = ymin, zmax = zmax, zmin = zmin)
         save_bin(pc, train_folder + f"/truncated_vel/{name + ext}")
 
 if __name__ == "__main__":
