@@ -1,5 +1,8 @@
 import numpy as np
+import torch
+
 from numba import njit, prange
+from torch.utils.data import Dataset
 
 @njit(parallel=True)
 def _truncate_pc_numba(pc_mapping, pts_xyz, reflectance,
@@ -35,7 +38,7 @@ def _truncate_pc_numba(pc_mapping, pts_xyz, reflectance,
     )
 
 class Pillarization():
-    def __init__(self, xmax: float, xmin: float, ymax: float, ymin: float, resolution: float, P: int, N: int):
+    def __init__(self, xmin: float, xmax: float, ymin: float, ymax: float, resolution: float, P: int, N: int):
         self.xmax = xmax
         self.xmin = xmin
         self.ymax = ymax
@@ -287,6 +290,37 @@ class Pillarization():
         return dist_to_centroid, dist_to_pillar
 
 
+class PillarDataset(Dataset, Pillarization):
+    def __init__(self, 
+                 pointclouds: list[np.ndarray],
+                 xmin: float, xmax: float,
+                 ymin: float,ymax: float, 
+                 resolution: float,
+                 num_pillars: int, num_pc: int):
+        Dataset.__init__(self)
+        Pillarization.__init__(
+            self, 
+            xmin = xmin, xmax = xmax,
+            ymin = ymin, ymax = ymax,
+            resolution = resolution,
+            P = num_pillars, N = num_pc,
+        )
+        
+        self.pointclouds = pointclouds
+        
+    def __len__(self):
+        return len(self.pointclouds)
+    
+    def __getitem__(self, index):
+        pointcloud = self.pointclouds[index]
+        
+        pc_9D, pillar_index, pillar_mapping = self.apply(pointcloud)
+        
+        return {
+            'features': torch.from_numpy(pc_9D),
+            'pillar_index': torch.from_numpy(pillar_index).long(),
+            'inverse_map': torch.from_numpy(pillar_mapping).long()
+        }
 
 
 
