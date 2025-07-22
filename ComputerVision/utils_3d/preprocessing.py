@@ -3,6 +3,7 @@ import torch
 
 from numba import njit, prange
 from torch.utils.data import Dataset
+from utils_3d.math_helper import *
 
 @njit(parallel=True)
 def _truncate_pc_numba(pc_mapping, pts_xyz, reflectance,
@@ -114,8 +115,15 @@ class Pillarization():
 
         
         pc_9D = np.c_[pts_xyz, dist_to_centroid, dist_to_pillar, reflectance]
-        pc_9D = pc_9D.reshape(self.pc_dim, self.target_pillar, self.target_pc)
-        return pc_9D, pillar_idx, inv
+
+        index_per_point = pillar_idx[inv]
+        sorted_index    = np.argsort(index_per_point)
+        index_per_point = index_per_point[sorted_index]; pc_9D = pc_9D[sorted_index, :]
+        
+        pc_9D = pc_9D.T.reshape(self.pc_dim, self.target_pillar, self.target_pc)
+        pillar_idx = np.sort(pillar_idx)
+        
+        return pc_9D, pillar_idx
 
     def truncate_pillar(self,
                         pillar_index: np.ndarray, pc_mapping: np.ndarray,
@@ -293,6 +301,9 @@ class Pillarization():
 class PillarDataset(Dataset, Pillarization):
     def __init__(self, 
                  pointclouds: list[np.ndarray],
+                 labels: list,
+                 calibs: list[np.ndarray],
+                 allowed: list[str],
                  xmin: float, xmax: float,
                  ymin: float,ymax: float, 
                  resolution: float,
@@ -307,166 +318,65 @@ class PillarDataset(Dataset, Pillarization):
         )
         
         self.pointclouds = pointclouds
+        self.labels = labels
+        self.calibs = calibs
+        self.allowed_classes = np.array(allowed)
         
     def __len__(self):
         return len(self.pointclouds)
     
     def __getitem__(self, index):
         pointcloud = self.pointclouds[index]
+        calib      = self.calibs[index]
+        label      = self.labels[index]
         
-        pc_9D, pillar_index, pillar_mapping = self.apply(pointcloud)
+        pc_9D, pillar_index = self.apply(pointcloud)
+        
+        cam_to_vel = np.linalg.inv(calib)
+        
+        objs_geometry = []
+        for obj in label:
+            corners_cam, obj_scale = get_3D_box_corneres(obj)
+            corners_vel = (cam_to_vel @ corners_cam.T).T[:, :3]
+            obj_center  = np.mean(corners_vel, axis = 0)
+
+            heading = compute_heading(corners_vel[1], corners_vel[2])
+            data = np.concatenate([obj_center, 
+                                   obj_scale, 
+                                   np.array([heading]), 
+                                   np.where(self.allowed_classes == obj['class'])[0]])
+            objs_geometry += [data]
+
+        if not objs_geometry:
+            objs_geometry = np.zeros((1, obj_center.size + obj_scale.size + 1 + 1), dtype = np.float32)
+        else:
+            objs_geometry = np.vstack(objs_geometry)
         
         return {
-            'features': torch.from_numpy(pc_9D),
+            'features': torch.from_numpy(pc_9D).float(),
             'pillar_index': torch.from_numpy(pillar_index).long(),
-            'inverse_map': torch.from_numpy(pillar_mapping).long()
+            'geometry': torch.from_numpy(objs_geometry).float(),
         }
-
-
-
-
-
-
-pillar_encoder = lambda x_idx, y_idx, num_y_cell: x_idx * num_y_cell + y_idx
-pillar_decoder = lambda pillar_idx, num_y_cell: (pillar_idx // num_y_cell, pillar_idx % num_y_cell)
-
-def truncate_pillar(pillar_index: np.ndarray, pc_mapping: np.ndarray,
-                    pts_xyz: np.ndarray, reflectance: np.ndarray,
-                    tar_pillar_cnt: int):
-    curr_pillar_cnt = pillar_index.shape[0]
-    if curr_pillar_cnt <= tar_pillar_cnt:
-        return pc_mapping, pts_xyz, reflectance, pillar_index
-    
-    keep_index = np.random.choice(curr_pillar_cnt, size = tar_pillar_cnt, replace = False)
-    
-    remap = -np.ones(curr_pillar_cnt, dtype=int)
-    remap[keep_index] = np.arange(tar_pillar_cnt)
-    new_inv = remap[pc_mapping]
-
-    keep_pts_mask = new_inv >= 0
-    
-    return (
-        new_inv[keep_pts_mask],
-        pts_xyz[keep_pts_mask],        
-        reflectance[keep_pts_mask],
-        pillar_index[keep_index]
-    )
-
-def pad_pillars(pillar_index: np.ndarray,
-                pc_mapping:   np.ndarray,
-                pts_xyz:      np.ndarray,
-                reflectance:  np.ndarray,
-                num_x:        int,
-                num_y:        int,
-                tar_pillar_cnt:int,
-                tar_pc_cnt:    int):
-    curr_cnt = pillar_index.shape[0]
-    if curr_cnt >= tar_pillar_cnt:
-        return pc_mapping, pts_xyz, reflectance, pillar_index
-
-    occ = np.zeros((num_x, num_y), dtype=bool)
-    ix_u, iy_u = pillar_decoder(pillar_index, num_y)
-    occ[ix_u, iy_u] = True
-    empty_coords = np.argwhere(~occ)  
-
-    pad_cnt = tar_pillar_cnt - curr_cnt
-    sel = empty_coords[np.random.choice(
-        empty_coords.shape[0],
-        size=pad_cnt,
-        replace=False
-    )]
-    pad_globals = pillar_encoder(sel[:,0], sel[:,1], num_y)
-
-    new_slots  = np.arange(curr_cnt, curr_cnt + pad_cnt)
-    dummy_inv  = np.repeat(new_slots, tar_pc_cnt)
-    dummy_xyz  = np.zeros((pad_cnt * tar_pc_cnt, 3))
-    dummy_ref  = np.zeros((pad_cnt * tar_pc_cnt,))
-
-    return (
-        np.concatenate([pc_mapping,   dummy_inv]),
-        np.vstack([pts_xyz,           dummy_xyz]),
-        np.concatenate([reflectance,  dummy_ref]),
-        np.concatenate([pillar_index, pad_globals])                        
-    )
-    
-def truncate_pc(pc_mapping: np.ndarray, pts_xyz: np.ndarray, 
-                reflectance: np.ndarray, tar_pillar_cnt: int, 
-                tar_pc_cnt: int):
-    counts = np.bincount(pc_mapping, minlength = tar_pillar_cnt)
-    excess_pillars = np.where(counts > tar_pc_cnt)[0]
-    if excess_pillars.size == 0:
-        return pc_mapping, pts_xyz, reflectance
-    
-    keep_mask = np.ones(pc_mapping.shape, dtype = bool)
-    for pid in excess_pillars:
-        idxs_to_pill        = np.where(pc_mapping == pid)[0]
-        drop_idx            = np.random.choice(idxs_to_pill, 
-                                                size = (counts[pid] - tar_pc_cnt),
-                                                replace = False)
-        keep_mask[drop_idx] = False
-
-    return(
-        pc_mapping[keep_mask],
-        pts_xyz[keep_mask],
-        reflectance[keep_mask]
-    )
-    
-def pad_pc(pc_mapping: np.ndarray, pts_xyz: np.ndarray, reflectance: np.ndarray, 
-           dist_to_centroid: np.ndarray, dist_to_pillar: np.ndarray, 
-           tar_pillar_cnt: int, tar_pc_cnt: int):
-    """Note: padding must be behind lifting calculation to avoid shifting centroid"""
-
-    counts = np.bincount(pc_mapping, minlength = tar_pillar_cnt)
-    missing_pillars = np.where(counts < tar_pc_cnt)[0]
-    if missing_pillars.size == 0:
-        return pc_mapping, pts_xyz, reflectance, dist_to_centroid, dist_to_pillar
-
-    pad_inv           = []
-    pad_xyz           = []
-    pad_reflectance   = []
-    pad_dist_centroid = []
-    pad_dist_pillar   = []
-
-
-    for pid in missing_pillars:
-        to_pad = tar_pc_cnt - counts[pid]
-        pad_inv           += [np.full(to_pad, pid, dtype = int)]
-        pad_xyz           += [np.zeros((to_pad, 3))]
-        pad_dist_pillar   += [np.zeros((to_pad, 2))]
-        pad_dist_centroid += [np.zeros((to_pad, 3))]
-        pad_reflectance   += [np.zeros(to_pad)]
-
-    dummy_inv           = np.concatenate(pad_inv)
-    dummy_pts_xyz       = np.vstack(pad_xyz)
-    dummy_dist_pillar   = np.vstack(pad_dist_pillar)
-    dummy_dist_centroid = np.vstack(pad_dist_centroid)
-    dummy_reflectance   = np.concatenate(pad_reflectance)
         
-    return (
-        np.concatenate([pc_mapping,  dummy_inv]),
-        np.vstack([pts_xyz,          dummy_pts_xyz]),
-        np.concatenate([reflectance, dummy_reflectance]),
-        np.vstack([dist_to_centroid, dummy_dist_centroid]),
-        np.vstack([dist_to_pillar,   dummy_dist_pillar])
-    )
+    @staticmethod
+    def collate_fn(batch):
+        features = torch.stack([item['features'] for item in batch], dim=0)
+        pillar_index = torch.stack([item['pillar_index'] for item in batch], dim=0)
+        
+        prev_idx = 0
+        geometries = []; batch_index = []
+        for item in batch:
+            geometries += [item['geometry']]
+            length      = len(item['geometry'])
+            current_id  = prev_idx + length
 
+            batch_index += [[prev_idx, current_id]]
+            prev_idx = current_id
+        geometries = torch.vstack(geometries)
 
-def pillar_stats(pts_xyz: np.ndarray, pillar_index: np.ndarray, pc_mapping: np.ndarray, num_y: int, x_centers: np.ndarray, y_centers: np.ndarray, tar_pillar_cnt: int):
-    counts = np.bincount(pc_mapping, minlength = tar_pillar_cnt)
-    sum_x  = np.bincount(pc_mapping, weights = pts_xyz[:,0], minlength = tar_pillar_cnt) # Essentially summation per pillar using inverse mapping
-    sum_y  = np.bincount(pc_mapping, weights = pts_xyz[:,1], minlength = tar_pillar_cnt) # if the pillar was padded => summation in any axis == 0
-    sum_z  = np.bincount(pc_mapping, weights = pts_xyz[:,2], minlength = tar_pillar_cnt)
-    centroids = np.vstack((sum_x, sum_y, sum_z)).T / counts[:,None]
-    
-
-    centroid_per_point = centroids[pc_mapping]          # shape (n_pts, 3) redistribute the centroid to each point
-    dist_to_centroid   = pts_xyz - centroid_per_point
-
-    ix_unique, iy_unique = pillar_decoder(pillar_index, num_y)
-    
-    pillar_centers = np.vstack((x_centers[ix_unique],
-                                y_centers[iy_unique])).T
-    pillar_center_per_pt = pillar_centers[pc_mapping]
-    dist_to_pillar = pts_xyz[:, :2] - pillar_center_per_pt
-    
-    return dist_to_centroid, dist_to_pillar
+        return {
+            'features': features,
+            'pillar_index': pillar_index,
+            'geometry': geometries,
+            'batch_index': torch.tensor(batch_index, dtype=torch.long)
+        }
