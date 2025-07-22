@@ -23,7 +23,14 @@ def get_3D_box_corneres(obj: dict) -> np.ndarray:
         [0          , 0, 0         , 1]
     ], dtype=np.float32)
     corners3d = (R @ corners).T
-    return corners3d
+    return corners3d, np.array([l, w, h])
+
+def compute_heading(corner1: np.ndarray, corner2: np.ndarray):
+    dx = corner1[0] - corner2[0]
+    dy = corner1[1] - corner2[1]
+    
+    raw_yaw  = np.arctan2(dy, dx)
+    return (raw_yaw + np.pi) % np.pi
 
 def crop_pc(pc: np.ndarray, 
             xmin: float = 0  , xmax: float = 70,

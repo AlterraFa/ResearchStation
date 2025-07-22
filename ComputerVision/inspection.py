@@ -68,11 +68,12 @@ def visualize_seq(train_folder: str, fps: float = 10) -> None:
         cam_to_Vel = np.linalg.inv(T)
         
         for objs in labels:
-            corner_cam = get_3D_box_corneres(objs) # Camera corners
+            corner_cam, obj_scale = get_3D_box_corneres(objs) # Camera corners
             corner_Vel = (cam_to_Vel @ corner_cam.T).T[:, :3]
             line_set   = create_line_set(corner_Vel)
             vis.add_geometry(line_set, reset_bounding_box = False)
             box_geometry.append(line_set)
+
 
         pcd.points = o3d.utility.Vector3dVector(xyz)
         colors     = colorized_by_z(xyz)
@@ -104,19 +105,29 @@ def inspect_frame(index: int, train_folder: str, crop_mode: bool) -> None:
         o3d.utility.Vector3dVector(pc),
     )
     pcd.colors = o3d.utility.Vector3dVector(colorized_by_z(pc))
-    boxGeoms = []
+    boxGeoms = []; obj_centers = []
     for obj in labels:
-        corners_cam = get_3D_box_corneres(obj)
+        corners_cam, obj_scale = get_3D_box_corneres(obj)
         corners_Vel = (camToVel @ corners_cam.T).T[:, :3]
+        obj_center  = np.mean(corners_Vel, axis = 0)
+
         boxGeoms.append(create_line_set(corners_Vel))
+
+        sphere = o3d.geometry.TriangleMesh.create_sphere(radius = 0.2)
+        sphere.paint_uniform_color([1.0, 0.0, 0.0])
+        sphere.translate(obj_center)
+        obj_centers += [sphere]
+
+        print(np.degrees(compute_heading(corners_Vel[1], corners_Vel[2])))
 
     # Origin point
     origin_sphere = o3d.geometry.TriangleMesh.create_sphere(radius = 0.2)
     origin_sphere.paint_uniform_color([1.0, 0.0, 0.0])
     origin_sphere.translate([0, 0, 0])
 
+
     o3d.visualization.draw_geometries(
-        [pcd, *boxGeoms, origin_sphere],
+        [pcd, *boxGeoms, origin_sphere, *obj_centers],
         window_name=f"Inspect frame {idx}"
     )
 
