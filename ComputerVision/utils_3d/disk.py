@@ -23,7 +23,7 @@ def load_labels(label_path: str) -> list[dict]:
             rot_y = float(data[14])
             objs.append({'h':h, 'w':w, 'l':l,
                          'x':x, 'y':y, 'z':z,
-                         'rot_y':rot_y})
+                         'rot_y':rot_y, 'class': cls})
     return objs
 
 def load_calib(calibPath: str) -> np.ndarray:
