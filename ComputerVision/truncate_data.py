@@ -7,7 +7,7 @@ import configparser
 
 from tqdm.auto import tqdm
 from utils_3d.math_helper import crop_pc
-from utils_3d.disk import load_bin, save_bin
+from utils_3d.disk import load_binary, save_bin
 
 config = configparser.ConfigParser()
 config.read("./model/config.ini")
@@ -32,7 +32,7 @@ def truncate(train_folder: str):
         basename = os.path.basename(frame_path)
         name, ext  = os.path.splitext(basename)
 
-        pc = load_bin(frame_path)
+        pc = load_binary(frame_path)
         pc = crop_pc(pc, xmax = xmax, xmin = xmin, ymax = ymax, ymin = ymin, zmax = zmax, zmin = zmin)
         save_bin(pc, train_folder + f"/truncated_vel/{name + ext}")
 

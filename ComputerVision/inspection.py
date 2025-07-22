@@ -36,7 +36,7 @@ def visualize_seq(train_folder: str, fps: float = 10) -> None:
         print("Invalid folder")
         exit(-1)
     
-    firstPc = load_bin(frame_files[0])
+    firstPc = load_binary(frame_files[0])
     xyz = firstPc[:, :3]
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(xyz)
@@ -55,7 +55,7 @@ def visualize_seq(train_folder: str, fps: float = 10) -> None:
     bar = tqdm(frame_files, desc="Playing frames", unit="frame")
     for _ in bar:
         # Load calibration, binary and labels
-        pc     = load_bin(frame_files[bar.n])
+        pc     = load_binary(frame_files[bar.n])
         T      = load_calib(calib_files[bar.n])
         labels = load_labels(label_files[bar.n])
         
@@ -91,7 +91,7 @@ def inspect_frame(index: int, train_folder: str, crop_mode: bool) -> None:
     calibFile = os.path.join(train_folder, 'calib',    f"{idx}.txt")
     labelFile = os.path.join(train_folder, 'label_2',  f"{idx}.txt")
 
-    pc       = load_bin(bin_file)[:, :3]
+    pc       = load_binary(bin_file)[:, :3]
     Tcam     = load_calib(calibFile)
     labels   = load_labels(labelFile)
     camToVel = np.linalg.inv(Tcam)
